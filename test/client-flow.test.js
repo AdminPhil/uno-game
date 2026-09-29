@@ -28,6 +28,27 @@ const seat = { action: 'joined', id: 'me', token: 'secret', lobbyId: 'ABC123', s
     players: [{ id: 'me', name: 'Alice', isCreator: true, ready: false, uno: false, cardCount: 0 }] };
 afterEach(() => { for (const w of windows.splice(0)) w.close(); });
 describe('actual browser client script', () => {
+    it('lets only the connected host start once all players are ready', async () => {
+        const b = await browser();
+        expect(b.el('start-game').hidden).toBe(true);
+        const ready = { ...seat, players: [
+            { ...seat.players[0], ready: true, connected: true },
+            { id: 'other', name: 'Boris', ready: true, connected: true },
+            { id: 'third', name: 'Chris', ready: true, connected: false },
+        ] };
+        b.receive(ready);
+        expect(b.el('start-game').hidden).toBe(false);
+        expect(b.el('start-game').disabled).toBe(true);
+        expect(b.el('players').textContent).toContain('Chris (Reconnecting');
+        b.receive({ ...ready, action: 'players', players: ready.players.map(p => ({ ...p, connected: true })) });
+        expect(b.el('start-game').disabled).toBe(false);
+        expect(b.el('ready').textContent).toBe('Not Ready');
+        b.el('start-game').click();
+        expect(JSON.parse(b.socket.send.mock.calls.at(-1)[0])).toEqual({ action: 'start' });
+        b.receive({ ...ready, action: 'players', players: ready.players.map(p => ({ ...p, connected: true, isCreator: p.id === 'other' })) });
+        expect(b.el('start-game').hidden).toBe(true);
+        expect(b.el('start-game').disabled).toBe(true);
+    });
     it('shares only the game URL and acknowledged lobby code through Telegram', async () => {
         const b = await browser();
         b.w.open = vi.fn();

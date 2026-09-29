@@ -3,6 +3,8 @@ const lobbyIdInput = document.getElementById('lobby-id');
 const joinButton = document.getElementById('join');
 const playersList = document.getElementById('players');
 const readyButton = document.getElementById('ready');
+const startButton = document.getElementById('start-game');
+const startHelp = document.getElementById('start-help');
 const lobbyDiv = document.getElementById('lobby');
 const gameDiv = document.getElementById('game');
 const opponentHandsDiv = document.getElementById('opponent-hands');
@@ -40,6 +42,15 @@ let reconnectAttempts = 0;
 let sessionToken = sessionStorage.getItem('unoSessionToken');
 const statusText = document.getElementById('connection-status');
 function setControls() {
+    const inLobby = joined && gameDiv.style.display === 'none';
+    const me = players.find(player => player.id === myId);
+    startButton.hidden = !inLobby || !me?.isCreator;
+    startButton.disabled = !inLobby || !me?.isCreator || !canSendMessage()
+        || players.length < 2 || !players.every(player => player.ready && player.connected);
+    readyButton.textContent = me?.ready ? 'Not Ready' : 'Ready';
+    startHelp.textContent = !inLobby ? '' : me?.isCreator
+        ? 'Wait until everyone has joined and is Ready, then press Start Game.'
+        : 'When everyone is Ready, the lobby creator can start the game.';
     telegramInviteButton.disabled = !joined || !canSendMessage() || gameDiv.style.display !== 'none';
     readyButton.disabled = !joined || !canSendMessage() || gameDiv.style.display !== 'none';
     joinButton.disabled = !canSendMessage() || joined || !!sessionToken;
@@ -261,7 +272,9 @@ function updatePlayers(players, turn) {
         }
         
         // Add ready status
-        if (player.ready) {
+        if (player.connected === false) {
+            playerText += ' (Reconnecting…)';
+        } else if (player.ready) {
             playerText += ' (Ready)';
         }
         
@@ -574,6 +587,9 @@ joinButton.addEventListener('click', () => {
 
 readyButton.addEventListener('click', () => {
     sendMessage({ action: 'ready' });
+});
+startButton.addEventListener('click', () => {
+    if (!startButton.disabled) sendMessage({ action: 'start' });
 });
 
 telegramInviteButton.addEventListener('click', () => {

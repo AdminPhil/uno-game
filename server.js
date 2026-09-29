@@ -54,7 +54,6 @@ export function createGameServer({ port = 8080, noServer = false, graceMs = 6000
             }
         }
         broadcast(lobby);
-        checkStart(lobby);
     }
     function shuffle(deck) {
         for (let i = deck.length - 1; i > 0; i--) {
@@ -62,8 +61,7 @@ export function createGameServer({ port = 8080, noServer = false, graceMs = 6000
             [deck[i], deck[j]] = [deck[j], deck[i]];
         }
     }
-    function checkStart(lobby) {
-        if (lobby.game.started || lobby.players.length < 2 || !lobby.players.every(p => p.ready && p.ws)) return;
+    function startGame(lobby) {
         const game = lobby.game = emptyGame();
         for (const color of colors) for (const type of [...'0123456789', 'skip', 'reverse', 'draw2']) {
             game.deck.push({ color, type });
@@ -144,7 +142,7 @@ export function createGameServer({ port = 8080, noServer = false, graceMs = 6000
             clients.set(ws, restored);
             acknowledge(restored);
             const lobby = lobbies.get(restored.lobbyId);
-            broadcast(lobby); checkStart(lobby);
+            broadcast(lobby);
             return;
         }
         if (m.action === 'join') {
@@ -173,9 +171,16 @@ export function createGameServer({ port = 8080, noServer = false, graceMs = 6000
         const lobby = p && lobbies.get(p.lobbyId);
         if (!lobby || p.ws !== ws || !lobby.players.includes(p)) return error(ws, 'NOT_JOINED', 'Join a lobby before using game controls.');
         if (m.action === 'leave') { remove(p); send(ws, { action: 'left' }); return; }
+        if (m.action === 'start') {
+            if (lobby.game.started) return error(ws, 'GAME_STARTED', 'The game has already started.');
+            if (!p.isCreator) return error(ws, 'NOT_HOST', 'The lobby creator starts the game.');
+            if (lobby.players.length < 2 || !lobby.players.every(player => player.ready && player.ws?.readyState === WebSocket.OPEN))
+                return error(ws, 'NOT_READY', 'Wait for at least two players and for everyone to be connected and Ready.');
+            startGame(lobby); return;
+        }
         if (m.action === 'ready') {
             if (lobby.game.started) return error(ws, 'GAME_STARTED', 'The game has already started.');
-            p.ready = !p.ready; broadcast(lobby); checkStart(lobby); return;
+            p.ready = !p.ready; broadcast(lobby); return;
         }
         if (!['play', 'play_multiple', 'draw', 'uno'].includes(m.action)) return error(ws, 'BAD_MESSAGE', 'Unknown action.');
         if (!lobby.game.started) return error(ws, 'NOT_STARTED', 'Wait for the game to start.');

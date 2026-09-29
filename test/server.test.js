@@ -30,6 +30,9 @@ async function game() {
     const seat = await join(a);
     await join(b, 'Boris', seat.lobbyId);
     a.send({ action: 'ready' }); b.send({ action: 'ready' });
+    let ready;
+    do { ready = await a.next('players'); } while (!ready.players.every(p => p.ready));
+    a.send({ action: 'start' });
     const start = await a.next('start'); await b.next('start');
     a.messages.length = b.messages.length = 0;
     return { a, b, seat, start, lobby: server.lobbies.get(seat.lobbyId) };
@@ -41,6 +44,75 @@ beforeEach(async () => {
 afterEach(async () => { await server.close(); });
 
 describe('multiplayer protocol', () => {
+    it('starts all three joined players and rotates turns through everyone', async () => {
+        const clients = [await peer(), await peer(), await peer()];
+        const seat = await join(clients[0]);
+        await join(clients[1], 'Boris', seat.lobbyId);
+        await join(clients[2], 'Chris', seat.lobbyId);
+        for (const client of clients) client.send({ action: 'ready' });
+        let ready;
+        do { ready = await clients[0].next('players'); } while (!ready.players.every(p => p.ready));
+        expect(server.lobbies.get(seat.lobbyId).game.started).toBe(false);
+        clients[0].send({ action: 'start' });
+        for (const client of clients) {
+            const start = await client.next('start');
+            expect(start.players).toHaveLength(3);
+            expect(start.players.every(p => p.ready && p.connected)).toBe(true);
+            expect(start.hand).toHaveLength(7);
+        }
+        for (let turn = 0; turn < 3; turn++) {
+            for (const client of clients) client.messages.length = 0;
+            clients[turn].send({ action: 'draw' });
+            for (const client of clients) expect((await client.next('update')).turn).toBe((turn + 1) % 3);
+        }
+    });
+    it('waits for a disconnected ready player and requires host start after rejoin', async () => {
+        const a = await peer(), b = await peer(), c = await peer();
+        const seat = await join(a);
+        await join(b, 'Boris', seat.lobbyId);
+        const third = await join(c, 'Chris', seat.lobbyId);
+        c.send({ action: 'ready' });
+        while (!(await c.next('players')).players[2].ready) {}
+        await c.disconnect();
+        while ((await a.next('players')).players[2]?.connected !== false) {}
+        a.send({ action: 'ready' }); b.send({ action: 'ready' });
+        let state;
+        do { state = await a.next('players'); } while (!state.players.every(p => p.ready));
+        expect(state.started).toBe(false);
+        expect(state.players[2].connected).toBe(false);
+        a.send({ action: 'start' });
+        expect((await a.next('error')).code).toBe('NOT_READY');
+        const restored = await peer();
+        restored.send({ action: 'rejoin', token: third.token });
+        await restored.next('joined');
+        expect(server.lobbies.get(seat.lobbyId).game.started).toBe(false);
+        a.send({ action: 'start' });
+        for (const client of [a, b, restored]) expect((await client.next('start')).players).toHaveLength(3);
+    });
+    it('keeps two ready players waiting for a third and validates host start', async () => {
+        const a = await peer(), b = await peer(), c = await peer();
+        a.send({ action: 'start' });
+        expect((await a.next('error')).code).toBe('NOT_JOINED');
+        const seat = await join(a);
+        a.send({ action: 'start' });
+        expect((await a.next('error')).code).toBe('NOT_READY');
+        await join(b, 'Boris', seat.lobbyId);
+        a.send({ action: 'ready' }); b.send({ action: 'ready' });
+        let state;
+        do { state = await a.next('players'); } while (!state.players.every(p => p.ready));
+        expect(server.lobbies.get(seat.lobbyId).game.started).toBe(false);
+        await join(c, 'Chris', seat.lobbyId);
+        b.send({ action: 'start' });
+        expect((await b.next('error')).code).toBe('NOT_HOST');
+        a.send({ action: 'start' });
+        expect((await a.next('error')).code).toBe('NOT_READY');
+        c.send({ action: 'ready' });
+        do { state = await a.next('players'); } while (!state.players.every(p => p.ready));
+        a.send({ action: 'start' });
+        for (const client of [a, b, c]) expect((await client.next('start')).hand).toHaveLength(7);
+        a.send({ action: 'start' });
+        expect((await a.next('error')).code).toBe('GAME_STARTED');
+    });
     it('rejects ready before joining without creating a lobby', async () => {
         const a = await peer(); a.send({ action: 'ready' });
         expect((await a.next('error')).code).toBe('NOT_JOINED');

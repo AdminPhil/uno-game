@@ -83,7 +83,7 @@ A modern, real-time multiplayer UNO card game built with WebSockets, featuring b
 3. Click "Join Game"
 4. Share the lobby ID with friends
 5. Click "Ready" when all players have joined
-6. Game starts automatically when all players are ready!
+6. Wait until everyone has joined and is Ready, then the lobby creator presses **Start Game**.
 
 ## 📋 Game Rules
 
