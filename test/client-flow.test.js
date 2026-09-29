@@ -28,6 +28,28 @@ const seat = { action: 'joined', id: 'me', token: 'secret', lobbyId: 'ABC123', s
     players: [{ id: 'me', name: 'Alice', isCreator: true, ready: false, uno: false, cardCount: 0 }] };
 afterEach(() => { for (const w of windows.splice(0)) w.close(); });
 describe('actual browser client script', () => {
+    it('shares only the game URL and acknowledged lobby code through Telegram', async () => {
+        const b = await browser();
+        b.w.open = vi.fn();
+        expect(b.el('invite-telegram').disabled).toBe(true);
+        b.receive(seat);
+        b.el('invite-telegram').click();
+        const [url, target, features] = b.w.open.mock.calls[0];
+        const share = new URL(url);
+        expect(share.origin + share.pathname).toBe('https://t.me/share/url');
+        expect(share.searchParams.get('url')).toBe('http://localhost:3000/');
+        expect(share.searchParams.get('text')).toContain('Lobby code: ABC123');
+        expect(url).not.toContain(seat.token);
+        expect(target).toBe('_blank');
+        expect(features).toBe('noopener,noreferrer');
+        b.receive({ ...seat, action: 'start', started: true, turn: 0,
+            hand: [{ color: 'red', type: '5' }], discardPile: [{ color: 'blue', type: '5' }] });
+        expect(b.el('invite-telegram').disabled).toBe(true);
+        b.el('invite-telegram').click();
+        expect(b.w.open).toHaveBeenCalledTimes(1);
+        b.receive({ action: 'left' });
+        expect(b.el('invite-telegram').disabled).toBe(true);
+    });
     it('prompts drawing only on your connected turn without a playable card', async () => {
         const b = await browser();
         const game = { ...seat, started: true, turn: 0,

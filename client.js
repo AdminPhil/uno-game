@@ -16,6 +16,7 @@ const turnText = document.getElementById('turn-text');
 const wildColorPicker = document.getElementById('wild-color-picker');
 const colorOptions = document.getElementById('color-options');
 const lobbyInfo = document.getElementById('lobby-info');
+const telegramInviteButton = document.getElementById('invite-telegram');
 const currentLobbyId = document.getElementById('current-lobby-id');
 
 let myId;
@@ -39,6 +40,7 @@ let reconnectAttempts = 0;
 let sessionToken = sessionStorage.getItem('unoSessionToken');
 const statusText = document.getElementById('connection-status');
 function setControls() {
+    telegramInviteButton.disabled = !joined || !canSendMessage() || gameDiv.style.display !== 'none';
     readyButton.disabled = !joined || !canSendMessage() || gameDiv.style.display !== 'none';
     joinButton.disabled = !canSendMessage() || joined || !!sessionToken;
     drawCardButton.disabled = !joined || !canSendMessage();
@@ -572,6 +574,15 @@ joinButton.addEventListener('click', () => {
 
 readyButton.addEventListener('click', () => {
     sendMessage({ action: 'ready' });
+});
+
+telegramInviteButton.addEventListener('click', () => {
+    if (!joined || !canSendMessage() || !myLobbyId || gameDiv.style.display !== 'none') return;
+    const shareUrl = new URL('https://t.me/share/url');
+    // Share only the public game address and lobby code, never session credentials.
+    shareUrl.searchParams.set('url', location.origin + '/');
+    shareUrl.searchParams.set('text', `Anyone up for UNO? Come join my lobby!\nLobby code: ${myLobbyId}\nEnter the family password, join with this code, and press Ready.`);
+    window.open(shareUrl.href, '_blank', 'noopener,noreferrer');
 });
 
 drawCardButton.addEventListener('click', () => {
