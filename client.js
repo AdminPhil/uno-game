@@ -9,6 +9,7 @@ const opponentHandsDiv = document.getElementById('opponent-hands');
 const playerHandDiv = document.getElementById('player-hand');
 const discardPileDiv = document.getElementById('discard-pile');
 const drawCardButton = document.getElementById('draw-card');
+const drawPrompt = document.getElementById('draw-prompt');
 
 const turnIndicator = document.getElementById('turn-indicator');
 const turnText = document.getElementById('turn-text');
@@ -25,6 +26,7 @@ let pendingWildCard = null;
 let selectedCards = [];
 let isSelectingMultiple = false;
 let myHand = [];
+let topCard = null;
 let myLobbyId = null;
 
 // Add these elements to the existing DOM references
@@ -40,6 +42,11 @@ function setControls() {
     readyButton.disabled = !joined || !canSendMessage() || gameDiv.style.display !== 'none';
     joinButton.disabled = !canSendMessage() || joined || !!sessionToken;
     drawCardButton.disabled = !joined || !canSendMessage();
+    const needsDraw = joined && canSendMessage() && gameDiv.style.display !== 'none'
+        && players[currentTurn]?.id === myId && topCard
+        && !myHand.some(card => card.type === 'wild' || card.type === 'wild4'
+            || card.color === topCard.color || card.type === topCard.type);
+    drawPrompt.textContent = needsDraw ? 'You have no playable cards. Click Draw Card to take a card.' : '';
 }
 function connect() {
     clearTimeout(reconnectTimer);
@@ -187,6 +194,7 @@ function resetGameState() {
     selectedCards = [];
     isSelectingMultiple = false;
     myHand = [];
+    topCard = null;
     myLobbyId = null;
     
     // Hide wild color picker and lobby info
@@ -419,6 +427,7 @@ function hideWildColorPicker() {
 function updateDiscardPile(discardPile) {
     discardPileDiv.innerHTML = '';
     const card = discardPile[discardPile.length - 1];
+    topCard = card;
     const cardDiv = createCard(card);
     discardPileDiv.appendChild(cardDiv);
 }

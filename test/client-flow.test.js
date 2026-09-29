@@ -28,6 +28,34 @@ const seat = { action: 'joined', id: 'me', token: 'secret', lobbyId: 'ABC123', s
     players: [{ id: 'me', name: 'Alice', isCreator: true, ready: false, uno: false, cardCount: 0 }] };
 afterEach(() => { for (const w of windows.splice(0)) w.close(); });
 describe('actual browser client script', () => {
+    it('prompts drawing only on your connected turn without a playable card', async () => {
+        const b = await browser();
+        const game = { ...seat, started: true, turn: 0,
+            hand: [{ color: 'red', type: '5' }],
+            discardPile: [{ color: 'blue', type: '9' }],
+            players: [...seat.players, { id: 'other', name: 'Boris', cardCount: 7 }] };
+        b.receive(game);
+        expect(b.el('draw-prompt').textContent).toContain('no playable cards');
+        b.el('draw-card').click();
+        expect(JSON.parse(b.socket.send.mock.calls.at(-1)[0])).toEqual({ action: 'draw' });
+        b.receive({ ...game, action: 'update', turn: 1 });
+        expect(b.el('draw-prompt').textContent).toBe('');
+        b.receive({ ...game, action: 'update' });
+        expect(b.el('draw-prompt').textContent).toContain('Draw Card');
+        b.socket.readyState = 3; b.socket.onclose({ code: 1006 });
+        expect(b.el('draw-prompt').textContent).toBe('');
+    });
+    it.each([
+        { color: 'blue', type: '5' },
+        { color: 'red', type: '9' },
+        { color: 'black', type: 'wild' },
+        { color: 'black', type: 'wild4' },
+    ])('does not prompt drawing with a playable $color $type', async card => {
+        const b = await browser();
+        b.receive({ ...seat, started: true, turn: 0, hand: [card],
+            discardPile: [{ color: 'blue', type: '9' }] });
+        expect(b.el('draw-prompt').textContent).toBe('');
+    });
     it('keeps Ready disabled until explicit join acknowledgement', async () => {
         const b = await browser();
         expect(b.socket.url).toBe('ws://localhost:3000/ws');
