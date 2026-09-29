@@ -28,6 +28,22 @@ const seat = { action: 'joined', id: 'me', token: 'secret', lobbyId: 'ABC123', s
     players: [{ id: 'me', name: 'Alice', isCreator: true, ready: false, uno: false, cardCount: 0 }] };
 afterEach(() => { for (const w of windows.splice(0)) w.close(); });
 describe('actual browser client script', () => {
+    it.each(['wild', 'wild4'])('announces the chosen color for %s and clears it on the next card', async type => {
+        const b = await browser();
+        const game = { ...seat, started: true, turn: 0, hand: [{ color: 'red', type: 'skip' }] };
+        for (const color of ['red', 'blue', 'green', 'yellow']) {
+            b.receive({ ...game, discardPile: [{ type, color }] });
+            expect(b.el('discard-description').textContent).toContain(`chosen color: ${color[0].toUpperCase() + color.slice(1)}`);
+        }
+        b.receive({ ...game, action: 'update', discardPile: [{ type: 'skip', color: 'red' }] });
+        expect(b.el('discard-description').textContent).toBe('Current color: Red • Skip: the next player misses a turn.');
+        expect(b.el('discard-pile').querySelector('.card-center-number').textContent).toBe('SKIP');
+        expect(b.el('player-hand').querySelector('.card-center-number').textContent).toBe('SKIP');
+        b.receive({ ...game, action: 'update', discardPile: [{ type: '5', color: 'blue' }] });
+        expect(b.el('discard-description').textContent).toBe('Current color: Blue');
+        b.receive({ action: 'left' });
+        expect(b.el('discard-description').textContent).toBe('');
+    });
     it('lets only the connected host start once all players are ready', async () => {
         const b = await browser();
         expect(b.el('start-game').hidden).toBe(true);

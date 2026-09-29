@@ -10,6 +10,7 @@ const gameDiv = document.getElementById('game');
 const opponentHandsDiv = document.getElementById('opponent-hands');
 const playerHandDiv = document.getElementById('player-hand');
 const discardPileDiv = document.getElementById('discard-pile');
+const discardDescription = document.getElementById('discard-description');
 const drawCardButton = document.getElementById('draw-card');
 const drawPrompt = document.getElementById('draw-prompt');
 
@@ -208,6 +209,7 @@ function resetGameState() {
     isSelectingMultiple = false;
     myHand = [];
     topCard = null;
+    discardDescription.textContent = '';
     myLobbyId = null;
     
     // Hide wild color picker and lobby info
@@ -443,6 +445,11 @@ function updateDiscardPile(discardPile) {
     discardPileDiv.innerHTML = '';
     const card = discardPile[discardPile.length - 1];
     topCard = card;
+    const color = card.color ? card.color[0].toUpperCase() + card.color.slice(1) : '';
+    const isWild = card.type === 'wild' || card.type === 'wild4';
+    discardDescription.textContent = isWild
+        ? `${card.type === 'wild4' ? 'Wild +4' : 'Wild'} — chosen color: ${color}`
+        : `Current color: ${color}${card.type === 'skip' ? ' • Skip: the next player misses a turn.' : ''}`;
     const cardDiv = createCard(card);
     discardPileDiv.appendChild(cardDiv);
 }
@@ -454,6 +461,10 @@ function createCard(card) {
     // Set data attributes for CSS styling
     cardDiv.setAttribute('data-color', card.color || 'black');
     cardDiv.setAttribute('data-type', card.type);
+    const cardName = card.type === 'skip' ? 'Skip — next player misses a turn'
+        : card.type === 'wild4' ? 'Wild +4' : card.type === 'wild' ? 'Wild' : card.type;
+    cardDiv.title = `${card.color ? card.color + ' ' : ''}${cardName}`;
+    cardDiv.setAttribute('aria-label', cardDiv.title);
     
     // Create card content structure
     const cardContent = document.createElement('div');
@@ -475,9 +486,9 @@ function createCard(card) {
         cornerSymbol = '2';
         centerContent = '+2';
     } else if (card.type === 'skip') {
-        cornerNumber = 'Ø';
-        cornerSymbol = 'Ø';
-        centerContent = 'Ø';
+        cornerNumber = 'SKIP';
+        cornerSymbol = 'SKIP';
+        centerContent = 'SKIP';
     } else if (card.type === 'reverse') {
         cornerNumber = '⇄';
         cornerSymbol = '⇄';

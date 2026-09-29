@@ -481,6 +481,21 @@ h1 {
     background: linear-gradient(135deg, #2c3e50 0%, #1a252f 100%);
 }
 
+#discard-description {
+    font-size: 1.15rem;
+    font-weight: 700;
+    text-align: center;
+    color: #253448;
+}
+
+.card[data-type="skip"] .card-center-number {
+    font-size: 20px;
+}
+
+.card[data-type="skip"] .card-corner-number {
+    font-size: 12px;
+}
+
 /* Special wild card styling */
 .card[data-type="wild"], .card[data-type="wild4"] {
     background: linear-gradient(135deg, 
