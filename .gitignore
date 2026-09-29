@@ -218,6 +218,7 @@ coverage/
 # Package manager lock files (keep pnpm-lock.yaml)
 # npm
 package-lock.json
+!deploy/package-lock.json
 # yarn
 yarn.lock
 
@@ -234,4 +235,4 @@ yarn.lock
 *.bak
 *.backup
 *.old
-*.orig 
+*.orig

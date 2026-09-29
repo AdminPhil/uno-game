@@ -14,7 +14,7 @@ async function browser(token) {
         static OPEN = 1;
         readyState = 0;
         send = vi.fn();
-        constructor() { sockets.push(this); }
+        constructor(url) { this.url = url; sockets.push(this); }
     };
     w.alert = vi.fn(); w.confirm = () => true;
     if (token) w.sessionStorage.setItem('unoSessionToken', token);
@@ -30,6 +30,7 @@ afterEach(() => { for (const w of windows.splice(0)) w.close(); });
 describe('actual browser client script', () => {
     it('keeps Ready disabled until explicit join acknowledgement', async () => {
         const b = await browser();
+        expect(b.socket.url).toBe('ws://localhost:3000/ws');
         expect(b.el('ready').disabled).toBe(true);
         b.el('name').value = 'Alice'; b.el('join').click();
         expect(JSON.parse(b.socket.send.mock.calls[0][0])).toEqual({ action: 'join', name: 'Alice' });

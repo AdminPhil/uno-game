@@ -7,10 +7,12 @@ const wild = c => c.type === 'wild' || c.type === 'wild4';
 const mod = (n, size) => ((n % size) + size) % size;
 const emptyGame = () => ({ deck: [], discardPile: [], turn: 0, direction: 1, started: false });
 
-export function createGameServer({ port = 8080, graceMs = 60000, heartbeatMs = 15000 } = {}) {
-    const wss = new WebSocketServer({ port, maxPayload: 16384 });
+export function createGameServer({ port = 8080, noServer = false, graceMs = 60000,
+    heartbeatMs = 15000, maxMessages = 60, messageWindowMs = 10000, maxSessions = 100 } = {}) {
+    const wss = new WebSocketServer({ ...(noServer ? { noServer: true } : { port }), maxPayload: 16384 });
     const lobbies = new Map(), sessions = new Map(), clients = new Map();
     const send = (ws, message) => {
+        if (ws?.bufferedAmount > 1024 * 1024) { ws.terminate(); return; }
         if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message), () => {});
     };
     const error = (ws, code, message) => send(ws, { action: 'error', code, message });
@@ -147,6 +149,7 @@ export function createGameServer({ port = 8080, graceMs = 60000, heartbeatMs = 1
         }
         if (m.action === 'join') {
             if (p) return error(ws, 'ALREADY_JOINED', 'Leave your current lobby first.');
+            if (sessions.size >= maxSessions) return error(ws, 'SERVER_FULL', 'The server is full. Please try again shortly.');
             if (typeof m.name !== 'string' || m.name.trim().length < 2 || m.name.trim().length > 20 ||
                 (m.lobbyId !== undefined && (typeof m.lobbyId !== 'string' || !/^[A-Z0-9]{6}$/.test(m.lobbyId))))
                 return error(ws, 'INVALID_JOIN', 'Enter a name of 2–20 characters and a valid lobby code.');
@@ -185,9 +188,15 @@ export function createGameServer({ port = 8080, graceMs = 60000, heartbeatMs = 1
     }
     wss.on('connection', ws => {
         clients.set(ws, null); ws.alive = true;
+        let count = 0, windowStart = Date.now();
         ws.on('pong', () => { ws.alive = true; });
         ws.on('error', () => {}); // ws protocol/transport errors must not become uncaught events.
-        ws.on('message', (data, binary) => receive(ws, data, binary));
+        ws.on('message', (data, binary) => {
+            if (ws.readyState !== WebSocket.OPEN) return;
+            if (Date.now() - windowStart >= messageWindowMs) { count = 0; windowStart = Date.now(); }
+            if (++count > maxMessages) { ws.close(4008, 'Too many messages'); return; }
+            receive(ws, data, binary);
+        });
         ws.on('close', () => {
             const p = clients.get(ws); clients.delete(ws);
             if (!p || p.ws !== ws) return;

@@ -1,0 +1,18 @@
+# Free is a trial default. Select an always-on paid instance for regular games.
+# Keep exactly one instance: game state is deliberately in memory.
+services:
+  - type: web
+    name: family-uno
+    runtime: docker
+    repo: https://github.com/AdminPhil/uno-game
+    branch: fix/multiplayer-foundation
+    region: virginia
+    plan: free
+    numInstances: 1
+    autoDeployTrigger: 'off'
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FAMILY_PASSWORD
+        sync: false

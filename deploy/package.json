@@ -1,0 +1,8 @@
+{
+  "name": "family-uno-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": { "ws": "8.22.0" },
+  "engines": { "node": ">=24 <25" }
+}

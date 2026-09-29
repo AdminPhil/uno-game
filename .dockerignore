@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!deploy/
+!deploy/package.json
+!deploy/package-lock.json
+!server.js
+!hosting.js
+!index.html
+!client.js
+!style.css

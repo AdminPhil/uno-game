@@ -33,6 +33,7 @@ joinFormContainer.id = 'join-form-container';
 
 let joined = false;
 let reconnectTimer;
+let reconnectAttempts = 0;
 let sessionToken = sessionStorage.getItem('unoSessionToken');
 const statusText = document.getElementById('connection-status');
 function setControls() {
@@ -43,9 +44,10 @@ function setControls() {
 function connect() {
     clearTimeout(reconnectTimer);
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(protocol + '//' + location.hostname + ':8080');
+    ws = new WebSocket(protocol + '//' + location.host + '/ws');
     setControls();
     ws.onopen = () => {
+        reconnectAttempts = 0;
         statusText.textContent = sessionToken ? 'Restoring your session…' : 'Connected. Join a lobby.';
         if (sessionToken) sendMessage({ action: 'rejoin', token: sessionToken });
         else { nameInput.disabled = false; lobbyIdInput.disabled = false; }
@@ -84,13 +86,18 @@ function connect() {
     };
     ws.onclose = event => {
         joined = false; setControls();
+        if (event.code === 4003) {
+            statusText.textContent = 'Family access expired. Reload to sign in again.';
+            return;
+        }
         if (event.code === 4001) {
             resetGameState();
             statusText.textContent = 'This session was opened in another tab. Reload to join again.';
             return;
         }
         statusText.textContent = 'Disconnected. Reconnecting…';
-        reconnectTimer = setTimeout(connect, 1000);
+        const delay = Math.min(15000, 1000 * 2 ** Math.min(reconnectAttempts++, 4));
+        reconnectTimer = setTimeout(connect, delay + Math.random() * 500);
     };
     ws.onerror = () => { statusText.textContent = 'Connection interrupted. Retrying…'; };
 }

@@ -69,7 +69,7 @@ A modern, real-time multiplayer UNO card game built with WebSockets, featuring b
 3. **Start the game server**
 
    ```bash
-   pnpm start
+   pnpm start:game
    ```
 
 4. **Start the frontend in a second terminal**
@@ -139,7 +139,7 @@ uno/
 
 ```bash
 # Start the WebSocket server
-pnpm start
+pnpm start:game
 
 # Run tests once
 pnpm test:run
@@ -250,7 +250,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 The vanilla JavaScript frontend is served by Vite; Node owns all lobby, player,
 session and game state in memory using the existing ws dependency. No database
-is required. Start both processes in separate terminals with `pnpm start` and
+is required. Start both processes in separate terminals with `pnpm start:game` and
 `pnpm serve`, then open http://localhost:3000 in two tabs.
 
 ### Joining and reconnecting
@@ -302,13 +302,10 @@ JSDOM and use real WebSocket connections with isolated ephemeral-port servers.
 Manual verification used two browser tabs: create, join by code, ready, start,
 refresh and continue taking turns.
 
-The browser connects to its current hostname on port 8080, using ws for HTTP and
-wss for HTTPS. PORT configures the backend listener; changing the public port
-also requires changing the frontend URL or providing a proxy. Public hosting
-needs HTTPS and a TLS WebSocket reverse proxy at that endpoint. Vite's development
-server is not a production host. Bearer tokens must remain private.
+The browser connects to the same origin at /ws. Production hosting now serves the
+built game and WebSocket from one process with a family password gate, exact
+origin validation and bounded resource limits. See [HOSTING.md](HOSTING.md) for
+local commands, Render setup, security boundaries and the pre-invitation checklist.
 
-Still outside this change: durable games, deployment configuration, rate limits,
-origin restrictions and stronger lobby access controls. Lobby codes are simple
-invitations, not account authentication. No UI redesign or new house rules were
-introduced.
+Hosting is prepared but not yet deployed. Sessions are still in memory and cannot
+survive a process restart. Keep one instance and deploy between games.
