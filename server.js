@@ -18,6 +18,7 @@ export function createGameServer({ port = 8080, noServer = false, graceMs = 6000
     const error = (ws, code, message) => send(ws, { action: 'error', code, message });
     function snapshot(lobby, p, action) {
         return { action, id: p.id, lobbyId: lobby.id, started: lobby.game.started,
+            roundWinner: lobby.roundWinner || null,
             players: lobby.players.map(p => ({ id: p.id, name: p.name, ready: p.ready,
                 isCreator: p.isCreator, connected: !!p.ws, uno: p.uno, cardCount: p.hand.length })),
             turn: lobby.game.started ? lobby.game.turn : -1,
@@ -62,6 +63,7 @@ export function createGameServer({ port = 8080, noServer = false, graceMs = 6000
         }
     }
     function startGame(lobby) {
+        lobby.roundWinner = null;
         const game = lobby.game = emptyGame();
         for (const color of colors) for (const type of [...'0123456789', 'skip', 'reverse', 'draw2']) {
             game.deck.push({ color, type });
@@ -115,8 +117,12 @@ export function createGameServer({ port = 8080, noServer = false, graceMs = 6000
         game.turn = mod(game.turn + steps * game.direction, players.length);
         broadcast(lobby);
         if (!p.hand.length) {
-            for (const player of players) { send(player.ws, { action: 'win', winner: p.name }); invalidate(player); }
-            lobbies.delete(lobby.id);
+            lobby.roundWinner = { id: p.id, name: p.name };
+            lobby.game = emptyGame();
+            for (const player of players) {
+                player.ready = false; player.hand = []; player.uno = false;
+            }
+            broadcast(lobby);
         }
     }
     function receive(ws, data, binary) {
@@ -177,6 +183,10 @@ export function createGameServer({ port = 8080, noServer = false, graceMs = 6000
             if (lobby.players.length < 2 || !lobby.players.every(player => player.ready && player.ws?.readyState === WebSocket.OPEN))
                 return error(ws, 'NOT_READY', 'Wait for at least two players and for everyone to be connected and Ready.');
             startGame(lobby); return;
+        }
+        if (m.action === 'play_again') {
+            if (lobby.game.started || !lobby.roundWinner) return error(ws, 'NOT_FINISHED', 'Wait until the round has finished.');
+            p.ready = true; broadcast(lobby); return;
         }
         if (m.action === 'ready') {
             if (lobby.game.started) return error(ws, 'GAME_STARTED', 'The game has already started.');

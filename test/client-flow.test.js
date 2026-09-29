@@ -28,6 +28,26 @@ const seat = { action: 'joined', id: 'me', token: 'secret', lobbyId: 'ABC123', s
     players: [{ id: 'me', name: 'Alice', isCreator: true, ready: false, uno: false, cardCount: 0 }] };
 afterEach(() => { for (const w of windows.splice(0)) w.close(); });
 describe('actual browser client script', () => {
+    it('celebrates the winner and lets players accept a rematch or leave', async () => {
+        const b = await browser();
+        const result = { ...seat, roundWinner: { id: 'me', name: 'Alice' } };
+        b.receive(result);
+        expect(b.el('round-result').hidden).toBe(false);
+        expect(b.el('winner-message').textContent).toContain('You won');
+        expect(b.w.sessionStorage.getItem('unoSessionToken')).toBe('secret');
+        b.el('play-again').click();
+        expect(JSON.parse(b.socket.send.mock.calls.at(-1)[0])).toEqual({ action: 'play_again' });
+        b.receive({ ...result, action: 'players', players: [{ ...seat.players[0], ready: true }] });
+        expect(b.el('play-again').disabled).toBe(true);
+        expect(b.el('rematch-status').textContent).toContain('ready for another round');
+        b.receive({ ...result, action: 'players', roundWinner: { id: 'other', name: '<img src=x>' } });
+        expect(b.el('winner-message').textContent).toContain('<img src=x> wins');
+        expect(b.el('winner-message').querySelector('img')).toBeNull();
+        b.el('leave-after-round').click();
+        expect(JSON.parse(b.socket.send.mock.calls.at(-1)[0])).toEqual({ action: 'leave' });
+        b.receive({ action: 'left' });
+        expect(b.el('round-result').hidden).toBe(true);
+    });
     it.each(['wild', 'wild4'])('announces the chosen color for %s and clears it on the next card', async type => {
         const b = await browser();
         const game = { ...seat, started: true, turn: 0, hand: [{ color: 'red', type: 'skip' }] };

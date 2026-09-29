@@ -44,6 +44,39 @@ beforeEach(async () => {
 afterEach(async () => { await server.close(); });
 
 describe('multiplayer protocol', () => {
+    it('keeps the lobby and sessions after winning and deals a fresh rematch', async () => {
+        const { a, b, seat, lobby } = await game();
+        a.send({ action: 'play_again' });
+        expect((await a.next('error')).code).toBe('NOT_FINISHED');
+        lobby.players[0].hand = [{ color: 'red', type: '5' }];
+        lobby.game.discardPile = [{ color: 'red', type: '1' }];
+        a.send({ action: 'play', card: { color: 'red', type: '5' } });
+        for (const client of [a, b]) {
+            const result = await client.next('players');
+            expect(result.roundWinner).toEqual({ id: seat.id, name: 'Alice' });
+            expect(result.started).toBe(false);
+            expect(result.players.every(p => !p.ready && p.cardCount === 0)).toBe(true);
+        }
+        expect(server.lobbies.get(seat.lobbyId)).toBe(lobby);
+        await a.disconnect();
+        const restored = await peer(); restored.send({ action: 'rejoin', token: seat.token });
+        expect((await restored.next('joined')).roundWinner.id).toBe(seat.id);
+        restored.send({ action: 'play_again' });
+        restored.send({ action: 'play_again' });
+        restored.send({ action: 'start' });
+        expect((await restored.next('error')).code).toBe('NOT_READY');
+        b.messages.length = 0;
+        b.send({ action: 'play_again' });
+        let state;
+        do { state = await b.next('players'); } while (!state.players.every(p => p.ready));
+        restored.send({ action: 'start' });
+        for (const client of [restored, b]) {
+            const start = await client.next('start');
+            expect(start.roundWinner).toBeNull();
+            expect(start.lobbyId).toBe(seat.lobbyId);
+            expect(start.hand).toHaveLength(7);
+        }
+    });
     it('starts all three joined players and rotates turns through everyone', async () => {
         const clients = [await peer(), await peer(), await peer()];
         const seat = await join(clients[0]);

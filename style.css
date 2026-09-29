@@ -75,6 +75,22 @@ h1 {
     font-weight: 400;
 }
 
+#round-result {
+    padding: 20px;
+    margin-bottom: 20px;
+    border: 2px solid #d6a928;
+    border-radius: 16px;
+    background: #fff8dc;
+    text-align: center;
+}
+.winner-stars { font-size: 2.5rem; animation: winner-bounce 600ms ease-out 3; }
+@keyframes winner-bounce {
+    50% { transform: translateY(-8px) scale(1.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .winner-stars { animation: none; }
+}
+
 /* Button Styling */
 #lobby button {
     width: 100%;

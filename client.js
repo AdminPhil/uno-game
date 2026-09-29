@@ -5,6 +5,12 @@ const playersList = document.getElementById('players');
 const readyButton = document.getElementById('ready');
 const startButton = document.getElementById('start-game');
 const startHelp = document.getElementById('start-help');
+const roundResult = document.getElementById('round-result');
+const winnerMessage = document.getElementById('winner-message');
+const playAgainButton = document.getElementById('play-again');
+const leaveAfterRound = document.getElementById('leave-after-round');
+const rematchStatus = document.getElementById('rematch-status');
+let roundWinner = null;
 const lobbyDiv = document.getElementById('lobby');
 const gameDiv = document.getElementById('game');
 const opponentHandsDiv = document.getElementById('opponent-hands');
@@ -45,6 +51,11 @@ const statusText = document.getElementById('connection-status');
 function setControls() {
     const inLobby = joined && gameDiv.style.display === 'none';
     const me = players.find(player => player.id === myId);
+    roundResult.hidden = !inLobby || !roundWinner;
+    winnerMessage.textContent = roundWinner ? (roundWinner.id === myId ? 'You won! Well played!' : `${roundWinner.name} wins! Well played!`) : '';
+    playAgainButton.disabled = !inLobby || !canSendMessage() || !roundWinner || !!me?.ready;
+    leaveAfterRound.disabled = !inLobby || !canSendMessage();
+    rematchStatus.textContent = roundWinner && me?.ready ? 'You’re ready for another round. Waiting for the others and the host.' : '';
     startButton.hidden = !inLobby || !me?.isCreator;
     startButton.disabled = !inLobby || !me?.isCreator || !canSendMessage()
         || players.length < 2 || !players.every(player => player.ready && player.connected);
@@ -92,6 +103,7 @@ function connect() {
         }
         if (['joined', 'players', 'start', 'update'].includes(message.action) && joined) {
             players = message.players; currentTurn = message.turn;
+            roundWinner = message.roundWinner || null;
             selectedCards = []; isSelectingMultiple = false; hideWildColorPicker();
             lobbyDiv.style.display = message.started ? 'none' : 'block';
             gameDiv.style.display = message.started ? 'block' : 'none';
@@ -103,7 +115,6 @@ function connect() {
         }
         if (message.action === 'game_ended') statusText.textContent = message.message;
         if (message.action === 'left') resetGameState();
-        if (message.action === 'win') { alert(message.winner + ' wins!'); resetGameState(); }
     };
     ws.onclose = event => {
         joined = false; setControls();
@@ -188,6 +199,7 @@ function attemptRejoin() {
 
 function resetGameState() {
     joined = false; sessionToken = null;
+    roundWinner = null;
     sessionStorage.removeItem('unoSessionToken');
     readyButton.disabled = true;
     // Reset to lobby
@@ -601,6 +613,12 @@ readyButton.addEventListener('click', () => {
 });
 startButton.addEventListener('click', () => {
     if (!startButton.disabled) sendMessage({ action: 'start' });
+});
+playAgainButton.addEventListener('click', () => {
+    if (!playAgainButton.disabled) sendMessage({ action: 'play_again' });
+});
+leaveAfterRound.addEventListener('click', () => {
+    if (!leaveAfterRound.disabled) sendMessage({ action: 'leave' });
 });
 
 telegramInviteButton.addEventListener('click', () => {

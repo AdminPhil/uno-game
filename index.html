@@ -10,6 +10,14 @@
     <h1>UNO</h1>
     <p id="connection-status" role="status" aria-live="polite">Connecting…</p>
     <div id="lobby">
+        <section id="round-result" hidden aria-labelledby="winner-message">
+            <div class="winner-stars" aria-hidden="true">🎉 🏆 🎉</div>
+            <h2 id="winner-message" role="status"></h2>
+            <p>Play again in this lobby?</p>
+            <button id="play-again" disabled>Yes, play again!</button>
+            <button id="leave-after-round" disabled>No thanks, leave lobby</button>
+            <p id="rematch-status" role="status"></p>
+        </section>
         <h2>Join UNO Game</h2>
         <div>
             <input type="text" id="name" placeholder="Enter your name">
