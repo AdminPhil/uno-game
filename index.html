@@ -8,6 +8,7 @@
 </head>
 <body>
     <h1>UNO</h1>
+    <p id="connection-status" role="status" aria-live="polite">Connecting…</p>
     <div id="lobby">
         <h2>Join UNO Game</h2>
         <div>
@@ -16,13 +17,13 @@
         <div>
             <input type="text" id="lobby-id" placeholder="Lobby ID (leave empty for new lobby)">
         </div>
-        <button id="join">Join Game</button>
+        <button id="join" disabled>Join Game</button>
         <div id="lobby-info" style="display: none;">
             <h3>Lobby: <span id="current-lobby-id"></span></h3>
             <p>Share this lobby ID with friends to join!</p>
         </div>
         <ul id="players"></ul>
-        <button id="ready">Ready</button>
+        <button id="ready" disabled>Ready</button>
     </div>
     <div id="game" style="display: none;">
         <div id="turn-indicator">
@@ -44,6 +45,6 @@
         </div>
         <div id="player-hand"></div>
     </div>
-    <script src="client.js"></script>
+    <script type="module" src="client.js"></script>
 </body>
 </html>

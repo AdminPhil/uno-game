@@ -871,3 +871,14 @@ h1 {
 #join-form-container > div {
     margin-bottom: 20px;
 }
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#connection-status {
+    color: white;
+    margin-bottom: 12px;
+    text-align: center;
+}

@@ -1,488 +1,217 @@
-import { WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
-const wss = new WebSocketServer({ port: 8080 });
+const colors = ['red', 'yellow', 'green', 'blue'];
+const wild = c => c.type === 'wild' || c.type === 'wild4';
+const mod = (n, size) => ((n % size) + size) % size;
+const emptyGame = () => ({ deck: [], discardPile: [], turn: 0, direction: 1, started: false });
 
-const clients = new Map();
-const lobbies = new Map(); // Map of lobbyId -> lobby object
-
-function createLobby(lobbyId) {
-    return {
-        id: lobbyId,
-        players: [],
-        game: {
-            deck: [],
-            discardPile: [],
-            turn: 0,
-            direction: 1,
-            started: false
-        }
+export function createGameServer({ port = 8080, graceMs = 60000, heartbeatMs = 15000 } = {}) {
+    const wss = new WebSocketServer({ port, maxPayload: 16384 });
+    const lobbies = new Map(), sessions = new Map(), clients = new Map();
+    const send = (ws, message) => {
+        if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message), () => {});
     };
-}
-
-function findOrCreateLobby(lobbyId) {
-    if (!lobbies.has(lobbyId)) {
-        lobbies.set(lobbyId, createLobby(lobbyId));
+    const error = (ws, code, message) => send(ws, { action: 'error', code, message });
+    function snapshot(lobby, p, action) {
+        return { action, id: p.id, lobbyId: lobby.id, started: lobby.game.started,
+            players: lobby.players.map(p => ({ id: p.id, name: p.name, ready: p.ready,
+                isCreator: p.isCreator, connected: !!p.ws, uno: p.uno, cardCount: p.hand.length })),
+            turn: lobby.game.started ? lobby.game.turn : -1,
+            ...(lobby.game.started ? { hand: p.hand, discardPile: lobby.game.discardPile } : {}) };
     }
-    return lobbies.get(lobbyId);
-}
-
-function generateLobbyId() {
-    return Math.random().toString(36).substring(2, 8).toUpperCase();
-}
-
-function broadcastToLobby(lobbyId, message, excludeClientId = null) {
-    [...clients.keys()].forEach((client) => {
-        const metadata = clients.get(client);
-        if (metadata.lobbyId === lobbyId && metadata.id !== excludeClientId) {
-            client.send(JSON.stringify(message));
-        }
-    });
-}
-
-function broadcastPlayers(lobbyId) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    const message = {
-        action: 'players',
-        players: lobby.players,
-        turn: lobby.game.turn,
-        lobbyId: lobbyId
-    };
-    broadcastToLobby(lobbyId, message);
-}
-
-function checkStartGame(lobbyId) {
-    const lobby = lobbies.get(lobbyId);
-    if (lobby.players.length > 1 && lobby.players.every(p => p.ready)) {
-        startGame(lobbyId);
+    function broadcast(lobby, action = lobby.game.started ? 'update' : 'players') {
+        for (const p of lobby.players) p.uno = p.hand.length === 1 ||
+            (p.hand.length > 1 && !wild(p.hand[0]) && p.hand.every(c => c.type === p.hand[0].type));
+        for (const p of lobby.players) send(p.ws, snapshot(lobby, p, action));
     }
-}
-
-function createDeck(lobbyId) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    const colors = ['red', 'yellow', 'green', 'blue'];
-    const types = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'skip', 'reverse', 'draw2'];
-    const wildTypes = ['wild', 'wild4'];
-
-    for (const color of colors) {
-        for (const type of types) {
-            lobby.game.deck.push({ color, type });
-            if (type !== '0') {
-                lobby.game.deck.push({ color, type });
+    const acknowledge = p => send(p.ws, { ...snapshot(lobbies.get(p.lobbyId), p, 'joined'), token: p.token });
+    function invalidate(p) {
+        clearTimeout(p.timer);
+        sessions.delete(p.token);
+        if (p.ws) clients.set(p.ws, null);
+    }
+    function remove(p) {
+        const lobby = lobbies.get(p.lobbyId);
+        invalidate(p);
+        if (!lobby || !lobby.players.includes(p)) return;
+        const { game, players } = lobby;
+        const current = players[game.turn];
+        const next = players[mod(game.turn + game.direction, players.length)];
+        game.deck.push(...p.hand.map(c => wild(c) ? { type: c.type } : c));
+        players.splice(players.indexOf(p), 1);
+        if (!players.length) { lobbies.delete(lobby.id); return; }
+        game.turn = Math.max(0, players.indexOf(current === p ? next : current));
+        if (p.isCreator) players[0].isCreator = true;
+        if (game.started && players.length < 2) {
+            lobby.game = emptyGame();
+            for (const remaining of players) {
+                remaining.ready = false; remaining.hand = []; remaining.uno = false;
+                send(remaining.ws, { action: 'game_ended', message: 'The other players left. Waiting in the lobby.' });
             }
         }
+        broadcast(lobby);
+        checkStart(lobby);
     }
-
-    for (let i = 0; i < 4; i++) {
-        for (const type of wildTypes) {
-            lobby.game.deck.push({ type });
+    function shuffle(deck) {
+        for (let i = deck.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [deck[i], deck[j]] = [deck[j], deck[i]];
         }
     }
-}
-
-function shuffleDeck(lobbyId) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    for (let i = lobby.game.deck.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [lobby.game.deck[i], lobby.game.deck[j]] = [lobby.game.deck[j], lobby.game.deck[i]];
-    }
-}
-
-function dealCards(lobbyId) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    for (const player of lobby.players) {
-        player.hand = lobby.game.deck.splice(0, 7);
-        player.uno = false;
-    }
-}
-
-function startGame(lobbyId) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    lobby.game.started = true;
-    createDeck(lobbyId);
-    shuffleDeck(lobbyId);
-    dealCards(lobbyId);
-
-    // Ensure the first card is not a wild card
-    let firstCardIndex = lobby.game.deck.findIndex(card => card.type !== 'wild' && card.type !== 'wild4');
-    if (firstCardIndex === -1) {
-        // This is extremely unlikely, but handle it just in case
-        shuffleDeck(lobbyId);
-        firstCardIndex = lobby.game.deck.findIndex(card => card.type !== 'wild' && card.type !== 'wild4');
-    }
-    lobby.game.discardPile.push(lobby.game.deck.splice(firstCardIndex, 1)[0]);
-
-    [...clients.keys()].forEach((client) => {
-        const metadata = clients.get(client);
-        if (metadata.lobbyId === lobbyId) {
-            const player = lobby.players.find(p => p.id === metadata.id);
-            const message = {
-                action: 'start',
-                players: lobby.players,
-                discardPile: lobby.game.discardPile,
-                turn: lobby.game.turn,
-                hand: player.hand,
-                id: metadata.id
-            };
-            client.send(JSON.stringify(message));
+    function checkStart(lobby) {
+        if (lobby.game.started || lobby.players.length < 2 || !lobby.players.every(p => p.ready && p.ws)) return;
+        const game = lobby.game = emptyGame();
+        for (const color of colors) for (const type of [...'0123456789', 'skip', 'reverse', 'draw2']) {
+            game.deck.push({ color, type });
+            if (type !== '0') game.deck.push({ color, type });
         }
-    });
-}
-
-function broadcastWin(lobbyId, winnerName) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    const message = {
-        action: 'win',
-        winner: winnerName
-    };
-    broadcastToLobby(lobbyId, message);
-    
-    // Reset game state completely
-    lobby.players.length = 0; // Clear all players from lobby
-    lobby.game.deck = [];
-    lobby.game.discardPile = [];
-    lobby.game.turn = 0;
-    lobby.game.direction = 1;
-    lobby.game.started = false;
-}
-
-function handlePlayMultiple(lobbyId, playerId, cards) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    const player = lobby.players.find(p => p.id === playerId);
-    const playerIndex = lobby.players.findIndex(p => p.id === playerId);
-
-    if (lobby.game.turn !== playerIndex) {
-        return; // Not their turn
+        for (let i = 0; i < 4; i++) game.deck.push({ type: 'wild' }, { type: 'wild4' });
+        shuffle(game.deck);
+        for (const p of lobby.players) p.hand = game.deck.splice(0, 7);
+        game.discardPile.push(game.deck.splice(game.deck.findIndex(c => !wild(c)), 1)[0]);
+        game.started = true;
+        broadcast(lobby, 'start');
     }
-
-    // Validate all cards are the same type and can be played
-    const firstCard = cards[0];
-    if (!cards.every(card => card.type === firstCard.type)) {
-        return; // Cards must be the same type
-    }
-
-    if (!isValidMove(lobbyId, firstCard)) {
-        return; // First card must be valid
-    }
-
-    // Remove all cards from player's hand
-    cards.forEach(card => {
-        let cardIndex;
-        if (card.type === 'wild' || card.type === 'wild4') {
-            cardIndex = player.hand.findIndex(c => c.type === card.type);
-        } else {
-            cardIndex = player.hand.findIndex(c => c.color === card.color && c.type === card.type);
-        }
-        
-        if (cardIndex >= 0) {
-            player.hand.splice(cardIndex, 1);
-        }
-    });
-
-    // Add the last card to discard pile (the effect applies to the last card played)
-    const lastCard = cards[cards.length - 1];
-    lobby.game.discardPile.push(lastCard);
-
-    // Handle special card effects (multiply by number of cards played)
-    const cardCount = cards.length;
-    
-    if (lastCard.type === 'skip') {
-        // Skip the next player(s)
-        lobby.game.turn = (lobby.game.turn + (cardCount + 1) * lobby.game.direction + lobby.players.length) % lobby.players.length;
-    } else if (lastCard.type === 'reverse') {
-        // Reverse direction (multiple reverses cancel out if even number)
-        if (cardCount % 2 === 1) {
-            lobby.game.direction *= -1;
-        }
-        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
-    } else if (lastCard.type === 'draw2') {
-        // Next player draws 2 cards per card played
-        const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
-        const nextPlayer = lobby.players[nextPlayerIndex];
-        nextPlayer.hand.push(...lobby.game.deck.splice(0, 2 * cardCount));
-        lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
-    } else if (lastCard.type === 'wild4') {
-        // Next player draws 4 cards per wild+4 played
-        const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
-        const nextPlayer = lobby.players[nextPlayerIndex];
-        nextPlayer.hand.push(...lobby.game.deck.splice(0, 4 * cardCount));
-        lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
-    } else {
-        // Regular cards or wild cards
-        lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
-    }
-
-    broadcastGameUpdate(lobbyId);
-
-    if (player.hand.length === 0) {
-        broadcastWin(lobbyId, player.name);
-    }
-}
-
-function handlePlay(lobbyId, playerId, card) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    const player = lobby.players.find(p => p.id === playerId);
-    const playerIndex = lobby.players.findIndex(p => p.id === playerId);
-
-    if (lobby.game.turn !== playerIndex) {
-        return; // Not their turn
-    }
-
-    if (isValidMove(lobbyId, card)) {
-        // Remove card from player's hand
-        // For wild cards, we need to match by type only since color is added by client
-        let cardIndex;
-        if (card.type === 'wild' || card.type === 'wild4') {
-            cardIndex = player.hand.findIndex(c => c.type === card.type);
-        } else {
-            cardIndex = player.hand.findIndex(c => c.color === card.color && c.type === card.type);
-        }
-        
-        if (cardIndex >= 0) {
-            player.hand.splice(cardIndex, 1);
-        }
-
-        // Add card to discard pile
-        lobby.game.discardPile.push(card);
-
-        // Handle special cards
-        if (card.type === 'skip') {
-            lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
-        } else if (card.type === 'reverse') {
-            lobby.game.direction *= -1;
-            lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
-        } else if (card.type === 'draw2') {
-            const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
-            const nextPlayer = lobby.players[nextPlayerIndex];
-            nextPlayer.hand.push(...lobby.game.deck.splice(0, 2));
-            lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
-        } else if (card.type === 'wild' || card.type === 'wild4') {
-            // Color will be chosen by the client
-            if (card.type === 'wild4') {
-                const nextPlayerIndex = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
-                const nextPlayer = lobby.players[nextPlayerIndex];
-                nextPlayer.hand.push(...lobby.game.deck.splice(0, 4));
-                lobby.game.turn = (lobby.game.turn + 2 * lobby.game.direction + lobby.players.length) % lobby.players.length;
-            } else {
-                lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+    function draw(game, count) {
+        const result = [];
+        for (let i = 0; i < count; i++) {
+            if (!game.deck.length) {
+                game.deck = game.discardPile.splice(0, game.discardPile.length - 1).map(c => wild(c) ? { type: c.type } : c);
+                shuffle(game.deck);
             }
-        } else {
-            lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
+            if (!game.deck.length) break;
+            result.push(game.deck.pop());
         }
-
-        broadcastGameUpdate(lobbyId);
-
-        if (player.hand.length === 0) {
-            broadcastWin(lobbyId, player.name);
+        return result;
+    }
+    function play(ws, lobby, p, requested) {
+        if (!Array.isArray(requested) || !requested.length || requested.length > p.hand.length)
+            return error(ws, 'INVALID_PLAY', 'Choose cards from your hand.');
+        const remaining = [...p.hand], cards = [];
+        // Validate the complete multiset before mutation, using only server-owned cards.
+        for (const card of requested) {
+            if (!card || typeof card !== 'object' || Array.isArray(card) || !colors.includes(card.color) || typeof card.type !== 'string')
+                return error(ws, 'INVALID_PLAY', 'Invalid card or wild color.');
+            const i = remaining.findIndex(c => c.type === card.type && (wild(c) || c.color === card.color));
+            if (i < 0) return error(ws, 'INVALID_PLAY', 'That card is no longer in your hand.');
+            const owned = remaining.splice(i, 1)[0];
+            cards.push(wild(owned) ? { type: owned.type, color: card.color } : owned);
+        }
+        const { game, players } = lobby;
+        const first = cards[0], last = cards.at(-1), top = game.discardPile.at(-1);
+        if (!cards.every(c => c.type === first.type) || !(wild(first) || first.color === top.color || first.type === top.type))
+            return error(ws, 'INVALID_PLAY', 'Those cards cannot be played on the top card.');
+        p.hand = remaining;
+        game.discardPile.push(...cards);
+        let steps = 1;
+        if (last.type === 'skip') steps = cards.length + 1;
+        if (last.type === 'reverse' && cards.length % 2) game.direction *= -1;
+        if (last.type === 'draw2' || last.type === 'wild4') {
+            players[mod(game.turn + game.direction, players.length)].hand.push(...draw(game, cards.length * (last.type === 'draw2' ? 2 : 4)));
+            steps = 2;
+        }
+        game.turn = mod(game.turn + steps * game.direction, players.length);
+        broadcast(lobby);
+        if (!p.hand.length) {
+            for (const player of players) { send(player.ws, { action: 'win', winner: p.name }); invalidate(player); }
+            lobbies.delete(lobby.id);
         }
     }
-}
-
-function handleDraw(lobbyId, playerId) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    const playerIndex = lobby.players.findIndex(p => p.id === playerId);
-
-    if (lobby.game.turn !== playerIndex) {
-        return; // Not their turn
-    }
-
-    const player = lobby.players[playerIndex];
-    player.hand.push(lobby.game.deck.pop());
-    lobby.game.turn = (lobby.game.turn + lobby.game.direction + lobby.players.length) % lobby.players.length;
-    broadcastGameUpdate(lobbyId);
-}
-
-function isValidMove(lobbyId, card) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return false;
-    
-    const topCard = lobby.game.discardPile[lobby.game.discardPile.length - 1];
-    return card.color === topCard.color || card.type === topCard.type || card.type === 'wild' || card.type === 'wild4';
-}
-
-function checkAutoUno(lobbyId, player) {
-    if (player.hand.length === 1) {
-        player.uno = true;
-        return true;
-    }
-    
-    // Check if all remaining cards are the same type (and not wild cards)
-    if (player.hand.length > 1) {
-        const firstCard = player.hand[0];
-        if (firstCard.type !== 'wild' && firstCard.type !== 'wild4') {
-            const allSameType = player.hand.every(card => card.type === firstCard.type);
-            if (allSameType) {
-                player.uno = true;
-                return true;
+    function receive(ws, data, binary) {
+        let m;
+        try { m = JSON.parse(data.toString()); } catch { return error(ws, 'BAD_MESSAGE', 'Invalid message.'); }
+        if (binary || !m || typeof m !== 'object' || Array.isArray(m) || typeof m.action !== 'string')
+            return error(ws, 'BAD_MESSAGE', 'Invalid message.');
+        const p = clients.get(ws);
+        if (m.action === 'rejoin') {
+            const restored = typeof m.token === 'string' && sessions.get(m.token);
+            if (!restored || !lobbies.has(restored.lobbyId) || (restored.expiresAt && restored.expiresAt <= Date.now()))
+                return error(ws, 'SESSION_EXPIRED', 'Your session expired. Please join a lobby again.');
+            if (p && p !== restored) return error(ws, 'ALREADY_JOINED', 'Leave your current lobby first.');
+            // One token owns one seat and one socket; the latest connection takes over.
+            if (restored.ws && restored.ws !== ws) {
+                const old = restored.ws;
+                clients.set(old, null);
+                error(old, 'SESSION_REPLACED', 'This session was opened in another tab.');
+                old.close(4001, 'Session replaced');
             }
+            clearTimeout(restored.timer);
+            restored.expiresAt = null; restored.ws = ws;
+            clients.set(ws, restored);
+            acknowledge(restored);
+            const lobby = lobbies.get(restored.lobbyId);
+            broadcast(lobby); checkStart(lobby);
+            return;
         }
-    }
-    
-    player.uno = false;
-    return false;
-}
-
-function broadcastGameUpdate(lobbyId) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    // Check for auto UNO for all players
-    lobby.players.forEach(player => {
-        if (player.hand) {
-            checkAutoUno(lobbyId, player);
-        }
-    });
-
-    [...clients.keys()].forEach((client) => {
-        const metadata = clients.get(client);
-        if (metadata.lobbyId === lobbyId) {
-            const player = lobby.players.find(p => p.id === metadata.id);
-            const message = {
-                action: 'update',
-                players: lobby.players,
-                discardPile: lobby.game.discardPile,
-                turn: lobby.game.turn,
-                hand: player.hand
-            };
-            client.send(JSON.stringify(message));
-        }
-    });
-}
-
-function handleUno(lobbyId, playerId) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    const player = lobby.players.find(p => p.id === playerId);
-    if (player.hand.length === 1) {
-        player.uno = true;
-        broadcastPlayers(lobbyId);
-    }
-}
-
-
-
-function uuidv4() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-    });
-}
-
-wss.on('connection', (ws) => {
-    const id = uuidv4();
-    const metadata = { id };
-    clients.set(ws, metadata);
-
-    console.log('Client connected');
-
-    ws.on('message', (messageAsString) => {
-        const message = JSON.parse(messageAsString);
-        const metadata = clients.get(ws);
-
-        if (message.action === 'join') {
-            metadata.name = message.name;
-            metadata.lobbyId = message.lobbyId || generateLobbyId();
-            const lobby = findOrCreateLobby(metadata.lobbyId);
-            
-            // Check if name already exists in this lobby
-            const existingPlayer = lobby.players.find(p => p.name.toLowerCase() === message.name.toLowerCase());
-            if (existingPlayer) {
-                // Send error message back to client
-                ws.send(JSON.stringify({
-                    action: 'error',
-                    message: 'A player with that name already exists in this lobby. Please choose a different name.'
-                }));
-                return;
+        if (m.action === 'join') {
+            if (p) return error(ws, 'ALREADY_JOINED', 'Leave your current lobby first.');
+            if (typeof m.name !== 'string' || m.name.trim().length < 2 || m.name.trim().length > 20 ||
+                (m.lobbyId !== undefined && (typeof m.lobbyId !== 'string' || !/^[A-Z0-9]{6}$/.test(m.lobbyId))))
+                return error(ws, 'INVALID_JOIN', 'Enter a name of 2–20 characters and a valid lobby code.');
+            let lobby = lobbies.get(m.lobbyId);
+            if (m.lobbyId && !lobby) return error(ws, 'LOBBY_NOT_FOUND', 'Lobby not found. Check the code or create a new lobby.');
+            if (lobby?.game.started) return error(ws, 'GAME_STARTED', 'That game has already started.');
+            if (lobby?.players.length >= 10) return error(ws, 'LOBBY_FULL', 'This lobby is full.');
+            if (lobby?.players.some(p => p.name.toLowerCase() === m.name.trim().toLowerCase()))
+                return error(ws, 'NAME_TAKEN', 'A player with that name already exists in this lobby.');
+            if (!lobby) {
+                let id;
+                do { id = randomBytes(3).toString('hex').toUpperCase(); } while (lobbies.has(id));
+                lobby = { id, players: [], game: emptyGame() }; lobbies.set(id, lobby);
             }
-            
-            // Check if this is the first player (lobby creator)
-            const isCreator = lobby.players.length === 0;
-            
-            lobby.players.push({ 
-                id: metadata.id, 
-                name: metadata.name, 
-                ready: false,
-                isCreator: isCreator
-            });
-            broadcastPlayers(metadata.lobbyId);
+            const joined = { id: randomUUID(), token: randomBytes(32).toString('hex'), lobbyId: lobby.id,
+                name: m.name.trim(), ready: false, isCreator: !lobby.players.length, uno: false, hand: [], ws };
+            lobby.players.push(joined); sessions.set(joined.token, joined); clients.set(ws, joined);
+            acknowledge(joined); broadcast(lobby);
+            return;
         }
-
-        if (message.action === 'ready') {
-            const lobby = findOrCreateLobby(metadata.lobbyId);
-            const player = lobby.players.find(p => p.id === metadata.id);
-            player.ready = !player.ready;
-            broadcastPlayers(metadata.lobbyId);
-            checkStartGame(metadata.lobbyId);
+        const lobby = p && lobbies.get(p.lobbyId);
+        if (!lobby || p.ws !== ws || !lobby.players.includes(p)) return error(ws, 'NOT_JOINED', 'Join a lobby before using game controls.');
+        if (m.action === 'leave') { remove(p); send(ws, { action: 'left' }); return; }
+        if (m.action === 'ready') {
+            if (lobby.game.started) return error(ws, 'GAME_STARTED', 'The game has already started.');
+            p.ready = !p.ready; broadcast(lobby); checkStart(lobby); return;
         }
-
-        if (message.action === 'play') {
-            handlePlay(metadata.lobbyId, metadata.id, message.card);
-        }
-
-        if (message.action === 'draw') {
-            handleDraw(metadata.lobbyId, metadata.id);
-        }
-
-        if (message.action === 'uno') {
-            handleUno(metadata.lobbyId, metadata.id);
-        }
-
-
-
-        if (message.action === 'play_multiple') {
-            handlePlayMultiple(metadata.lobbyId, metadata.id, message.cards);
-        }
-        
-        if (message.action === 'leave') {
-            handleLeave(metadata.lobbyId, metadata.id);
-        }
-    });
-
-    ws.on('close', () => {
-        const metadata = clients.get(ws);
-        const lobby = findOrCreateLobby(metadata.lobbyId);
-        const playerIndex = lobby.players.findIndex(p => p.id === metadata.id);
-        if (playerIndex > -1) {
-            lobby.players.splice(playerIndex, 1);
-            broadcastPlayers(metadata.lobbyId);
-        }
-        clients.delete(ws);
-        console.log('Client disconnected');
-    });
-});
-
-function handleLeave(lobbyId, playerId) {
-    const lobby = lobbies.get(lobbyId);
-    if (!lobby) return;
-    
-    const playerIndex = lobby.players.findIndex(p => p.id === playerId);
-    if (playerIndex > -1) {
-        lobby.players.splice(playerIndex, 1);
-        broadcastPlayers(lobbyId);
-        
-        // If lobby is empty, we could optionally remove it
-        if (lobby.players.length === 0) {
-            lobbies.delete(lobbyId);
-        }
+        if (!['play', 'play_multiple', 'draw', 'uno'].includes(m.action)) return error(ws, 'BAD_MESSAGE', 'Unknown action.');
+        if (!lobby.game.started) return error(ws, 'NOT_STARTED', 'Wait for the game to start.');
+        if (m.action === 'uno') { broadcast(lobby); return; }
+        if (lobby.players[lobby.game.turn] !== p) return error(ws, 'NOT_YOUR_TURN', 'Please wait for your turn.');
+        if (m.action === 'draw') {
+            p.hand.push(...draw(lobby.game, 1));
+            lobby.game.turn = mod(lobby.game.turn + lobby.game.direction, lobby.players.length); broadcast(lobby);
+        } else play(ws, lobby, p, m.action === 'play' ? [m.card] : m.cards);
     }
+    wss.on('connection', ws => {
+        clients.set(ws, null); ws.alive = true;
+        ws.on('pong', () => { ws.alive = true; });
+        ws.on('error', () => {}); // ws protocol/transport errors must not become uncaught events.
+        ws.on('message', (data, binary) => receive(ws, data, binary));
+        ws.on('close', () => {
+            const p = clients.get(ws); clients.delete(ws);
+            if (!p || p.ws !== ws) return;
+            p.ws = null; p.expiresAt = Date.now() + graceMs;
+            p.timer = setTimeout(() => remove(p), graceMs); p.timer.unref();
+            const lobby = lobbies.get(p.lobbyId); if (lobby) broadcast(lobby);
+        });
+    });
+    const heartbeat = setInterval(() => {
+        for (const ws of wss.clients) {
+            if (!ws.alive) ws.terminate();
+            else { ws.alive = false; ws.ping(() => {}); }
+        }
+    }, heartbeatMs);
+    heartbeat.unref();
+    return { wss, lobbies, sessions, async close() {
+        clearInterval(heartbeat);
+        for (const p of sessions.values()) invalidate(p);
+        for (const ws of wss.clients) ws.terminate();
+        await new Promise(resolve => wss.close(resolve));
+    } };
 }
 
-console.log('Server started on port 8080');
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+    const { wss } = createGameServer({ port: Number(process.env.PORT || 8080) });
+    wss.on('listening', () => console.log(`UNO server listening on ${wss.address().port}`));
+}

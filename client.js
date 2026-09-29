@@ -31,87 +31,77 @@ let myLobbyId = null;
 const joinFormContainer = document.createElement('div');
 joinFormContainer.id = 'join-form-container';
 
+let joined = false;
+let reconnectTimer;
+let sessionToken = sessionStorage.getItem('unoSessionToken');
+const statusText = document.getElementById('connection-status');
+function setControls() {
+    readyButton.disabled = !joined || !canSendMessage() || gameDiv.style.display !== 'none';
+    joinButton.disabled = !canSendMessage() || joined || !!sessionToken;
+    drawCardButton.disabled = !joined || !canSendMessage();
+}
 function connect() {
-    ws = new WebSocket('ws://localhost:8080');
-
+    clearTimeout(reconnectTimer);
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(protocol + '//' + location.hostname + ':8080');
+    setControls();
     ws.onopen = () => {
-        console.log('Connected to server');
+        statusText.textContent = sessionToken ? 'Restoring your session…' : 'Connected. Join a lobby.';
+        if (sessionToken) sendMessage({ action: 'rejoin', token: sessionToken });
+        else { nameInput.disabled = false; lobbyIdInput.disabled = false; }
+        setControls();
     };
-
-    ws.onmessage = (event) => {
+    ws.onmessage = event => {
         const message = JSON.parse(event.data);
-        
         if (message.action === 'error') {
-            alert(message.message);
-            // Re-enable form inputs so user can try again
-            nameInput.disabled = false;
-            lobbyIdInput.disabled = false;
-            joinButton.disabled = false;
+            if (['SESSION_EXPIRED', 'SESSION_REPLACED', 'NOT_JOINED'].includes(message.code)) resetGameState();
+            if (!joined) { nameInput.disabled = false; lobbyIdInput.disabled = false; }
+            statusText.textContent = message.message;
+            setControls();
             return;
         }
-        
-        if (message.action === 'players') {
-            players = message.players;
-            currentTurn = message.turn;
-            myLobbyId = message.lobbyId;
-            updatePlayers(message.players, message.turn);
-            updateTurnIndicator();
-            showLobbyInfo(message.lobbyId);
+        if (message.action === 'joined') {
+            joined = true; myId = message.id; myLobbyId = message.lobbyId;
+            sessionToken = message.token;
+            sessionStorage.setItem('unoSessionToken', sessionToken);
+            nameInput.value = message.players.find(p => p.id === myId).name;
+            statusText.textContent = 'Connected to lobby ' + myLobbyId;
         }
-
-        if (message.action === 'start') {
-            myId = message.id;
-            lobbyDiv.style.display = 'none';
-            gameDiv.style.display = 'block';
-            players = message.players;
-            currentTurn = message.turn;
-            myHand = message.hand;
-            updatePlayers(message.players, message.turn);
-            updateHand(message.hand);
-            updateDiscardPile(message.discardPile);
-            updateTurnIndicator();
+        if (['joined', 'players', 'start', 'update'].includes(message.action) && joined) {
+            players = message.players; currentTurn = message.turn;
+            selectedCards = []; isSelectingMultiple = false; hideWildColorPicker();
+            lobbyDiv.style.display = message.started ? 'none' : 'block';
+            gameDiv.style.display = message.started ? 'block' : 'none';
+            updatePlayers(players, currentTurn); showLobbyInfo(message.lobbyId);
+            if (message.started) {
+                myHand = message.hand; updateHand(myHand); updateDiscardPile(message.discardPile);
+            }
+            updateTurnIndicator(); setControls();
         }
-
-        if (message.action === 'update') {
-            players = message.players;
-            currentTurn = message.turn;
-            myHand = message.hand;
-            updatePlayers(message.players, message.turn);
-            updateHand(message.hand);
-            updateDiscardPile(message.discardPile);
-            updateTurnIndicator();
-        }
-
-        if (message.action === 'win') {
-            alert(`${message.winner} wins!`);
+        if (message.action === 'game_ended') statusText.textContent = message.message;
+        if (message.action === 'left') resetGameState();
+        if (message.action === 'win') { alert(message.winner + ' wins!'); resetGameState(); }
+    };
+    ws.onclose = event => {
+        joined = false; setControls();
+        if (event.code === 4001) {
             resetGameState();
+            statusText.textContent = 'This session was opened in another tab. Reload to join again.';
+            return;
         }
+        statusText.textContent = 'Disconnected. Reconnecting…';
+        reconnectTimer = setTimeout(connect, 1000);
     };
-
-    ws.onclose = (event) => {
-        console.log('Disconnected from server. Reconnecting...', event.code, event.reason);
-        // Only reconnect if it wasn't a manual close
-        if (event.code !== 1000) {
-            setTimeout(connect, 1000);
-        }
-    };
-
-    ws.onerror = (err) => {
-        console.error('WebSocket error:', err);
-        // Don't manually close on error, let the browser handle it
-    };
+    ws.onerror = () => { statusText.textContent = 'Connection interrupted. Retrying…'; };
 }
-
-function canSendMessage() {
-    return ws && ws.readyState === WebSocket.OPEN;
-}
-
+function canSendMessage() { return ws && ws.readyState === WebSocket.OPEN; }
 function sendMessage(message) {
-    if (canSendMessage()) {
-        ws.send(JSON.stringify(message));
-    } else {
-        console.warn('WebSocket is not connected. Message not sent:', message);
+    if (!canSendMessage() || (!joined && !['join', 'rejoin'].includes(message.action))) {
+        statusText.textContent = 'Wait for your connection and lobby to be confirmed.';
+        return false;
     }
+    ws.send(JSON.stringify(message));
+    return true;
 }
 
 function updateTurnIndicator() {
@@ -140,17 +130,16 @@ function showLobbyInfo(lobbyId) {
         // Find the creator and update the lobby info
         const creator = players.find(p => p.isCreator);
         const lobbyInfoTitle = document.querySelector('#lobby-info h3');
+        lobbyInfoTitle.replaceChildren('Lobby: ');
+        const code = document.createElement('span');
+        code.id = 'current-lobby-id'; code.textContent = lobbyId;
+        code.style.cursor = 'pointer'; code.title = 'Click to copy lobby ID';
+        code.addEventListener('click', copyLobbyId); lobbyInfoTitle.append(code);
         if (creator) {
-            lobbyInfoTitle.innerHTML = `Lobby: <span id="current-lobby-id">${lobbyId}</span><br><small style="font-size: 0.8em; opacity: 0.8;">Created by ${creator.name} 👑</small>`;
-            // Re-add the click functionality to the new span
-            const newLobbyIdSpan = document.getElementById('current-lobby-id');
-            newLobbyIdSpan.style.cursor = 'pointer';
-            newLobbyIdSpan.title = 'Click to copy lobby ID';
-            newLobbyIdSpan.addEventListener('click', copyLobbyId);
-        } else {
-            lobbyInfoTitle.innerHTML = `Lobby: <span id="current-lobby-id">${lobbyId}</span>`;
+            const byline = document.createElement('small');
+            byline.textContent = 'Created by ' + creator.name + ' 👑';
+            lobbyInfoTitle.append(document.createElement('br'), byline);
         }
-        
         lobbyInfo.style.display = 'block';
         hideJoinForm();
         
@@ -170,6 +159,9 @@ function attemptRejoin() {
 }
 
 function resetGameState() {
+    joined = false; sessionToken = null;
+    sessionStorage.removeItem('unoSessionToken');
+    readyButton.disabled = true;
     // Reset to lobby
     lobbyDiv.style.display = 'block';
     gameDiv.style.display = 'none';
@@ -204,6 +196,7 @@ function resetGameState() {
     // Clear localStorage
     localStorage.removeItem('unoLobbyId');
     localStorage.removeItem('unoPlayerName');
+    setControls();
 }
 
 function updatePlayers(players, turn) {
@@ -218,7 +211,7 @@ function updatePlayers(players, turn) {
         }
         
         // Check for UNO condition (1 card or multiple same-number cards)
-        if (player.hand && isUnoCondition(player.hand)) {
+        if (player.uno) {
             playerDiv.classList.add('uno');
         }
         
@@ -232,8 +225,8 @@ function updatePlayers(players, turn) {
             displayText += ' 👑';
         }
         
-        if (player.hand) {
-            playerDiv.textContent = `${displayText} (${player.hand.length} cards)`;
+        if (Number.isInteger(player.cardCount)) {
+            playerDiv.textContent = `${displayText} (${player.cardCount} cards)`;
         } else {
             playerDiv.textContent = displayText;
         }
@@ -530,6 +523,7 @@ colorOptions.addEventListener('click', (e) => {
 });
 
 joinButton.addEventListener('click', () => {
+    if (!canSendMessage() || joined || sessionToken) return;
     const name = nameInput.value.trim();
     const lobbyId = lobbyIdInput.value.trim().toUpperCase();
     
@@ -652,30 +646,7 @@ function createLeaveLobbyButton() {
 }
 
 function leaveLobby() {
-    if (confirm('Are you sure you want to leave the lobby?')) {
-        // Send leave message to server
-        sendMessage({ action: 'leave' });
-        
-        // Reset to join form state
-        showJoinForm();
-        hideLobbyInfo();
-        
-        // Clear lobby data
-        myLobbyId = null;
-        localStorage.removeItem('unoLobbyId');
-        localStorage.removeItem('unoPlayerName');
-        
-        // Clear players list
-        playersList.innerHTML = '';
-        
-        // Re-enable form inputs
-        nameInput.disabled = false;
-        lobbyIdInput.disabled = false;
-        joinButton.disabled = false;
-        
-        // Clear name input
-        nameInput.value = '';
-    }
+    if (confirm('Are you sure you want to leave the lobby?')) sendMessage({ action: 'leave' });
 }
 
 function showJoinForm() {

@@ -30,7 +30,7 @@ A modern, real-time multiplayer UNO card game built with WebSockets, featuring b
 ### 🏠 Advanced Lobby System
 
 - **Unique lobby IDs** for private games with friends
-- **Rejoin capability** using localStorage persistence
+- **Rejoin capability** using a secret sessionStorage token
 - **Lobby creator indicators** with crown emoji (👑)
 - **Name uniqueness validation** within each lobby
 - **Leave lobby functionality** with confirmation
@@ -72,8 +72,9 @@ A modern, real-time multiplayer UNO card game built with WebSockets, featuring b
    pnpm start
    ```
 
-4. **Open your browser**
-   Navigate to `http://localhost:3000` and open `index.html`
+4. **Start the frontend in a second terminal**
+
+   Run `pnpm serve`, then open `http://localhost:3000`.
 
 ### Quick Start
 
@@ -222,7 +223,7 @@ Players can select and play multiple cards of the same number in a single turn:
 
 #### Lobby Persistence
 
-- Uses localStorage to remember lobby and player name
+- Uses sessionStorage for the reconnect token; localStorage remembers form hints
 - Automatic rejoin attempt on page reload
 - Lobby IDs persist until manually cleared
 
@@ -244,3 +245,70 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ---
 
 **Enjoy playing UNO!** 🎉🃏
+
+## Multiplayer foundation
+
+The vanilla JavaScript frontend is served by Vite; Node owns all lobby, player,
+session and game state in memory using the existing ws dependency. No database
+is required. Start both processes in separate terminals with `pnpm start` and
+`pnpm serve`, then open http://localhost:3000 in two tabs.
+
+### Joining and reconnecting
+
+- A blank code creates a lobby. A supplied code must identify an existing waiting
+  lobby. Names are 2–20 characters and unique within the lobby.
+- The server sends a `joined` acknowledgement with the player ID, lobby snapshot
+  and a cryptographically random bearer token. Ready stays disabled until then.
+- The client sends `{ action: 'rejoin', token }` on refresh or network reconnect.
+  Success restores the same seat, ready state, hand and turn.
+- The secret token lives in sessionStorage, surviving refresh while allowing
+  independent tabs to play separately. localStorage holds only name/code hints.
+- A copied token takes over the same seat: the old socket is detached and closed,
+  and its client stops retrying. Repeated reconnects never add duplicate players.
+- A disconnected seat is reserved for 60 seconds after disconnect detection.
+  A 15-second heartbeat detects broken connections. An absent player's turn waits
+  until they return or their reservation expires.
+- Expiry/leave removes the seat and repairs the turn index. With fewer than two
+  players, the game ends and the remaining player returns to the waiting lobby.
+  Empty lobbies and expired tokens are removed. Winning invalidates all sessions
+  and returns everyone to joining, preserving the original end-of-game flow.
+- Server restarts lose games and tokens. Closing a tab loses its session token.
+  Expired or otherwise unrestorable sessions return cleanly to the join form.
+
+### Protocol and privacy
+
+Public player records contain only id, name, ready, isCreator, connected, uno and
+cardCount. Full hands appear only in the owning player's private snapshot.
+The joined, players, start and update snapshots include started and turn; active
+snapshots include the recipient's hand and discard pile. Tokens appear only in
+that player's joined acknowledgement.
+
+Actions require valid membership and the appropriate phase/turn. Single and
+multiple plays are checked against the actual hand, including duplicate counts,
+before any mutation. Extra browser-supplied card properties never enter game
+state. Wild colors must be red, yellow, green or blue. Existing same-type multiple
+plays, multiplied effects and auto-UNO behavior remain. Discards are recycled
+when the deck empties, and every played card is retained. Lobbies are limited to
+ten players so the 108-card deck can deal every starting hand.
+
+Errors contain action `error`, a machine-readable code and a user-facing message.
+Malformed JSON/envelopes and oversized messages are covered by regression tests;
+transport/protocol errors disconnect only the affected socket.
+
+### Validation and hosting limits
+
+Run `pnpm test:run` and `pnpm build`. Tests execute the actual client script in
+JSDOM and use real WebSocket connections with isolated ephemeral-port servers.
+Manual verification used two browser tabs: create, join by code, ready, start,
+refresh and continue taking turns.
+
+The browser connects to its current hostname on port 8080, using ws for HTTP and
+wss for HTTPS. PORT configures the backend listener; changing the public port
+also requires changing the frontend URL or providing a proxy. Public hosting
+needs HTTPS and a TLS WebSocket reverse proxy at that endpoint. Vite's development
+server is not a production host. Bearer tokens must remain private.
+
+Still outside this change: durable games, deployment configuration, rate limits,
+origin restrictions and stronger lobby access controls. Lobby codes are simple
+invitations, not account authentication. No UI redesign or new house rules were
+introduced.
